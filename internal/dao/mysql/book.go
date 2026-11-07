@@ -3,14 +3,11 @@ package mysql
 import (
 	"bs/internal/model"
 	"context"
-	"errors"
 	"fmt"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
-
-var ErrShelfFull = errors.New("书架已满")
 
 func (r *BookRepository) CreateBook(ctx context.Context, b *model.Book) (*model.Book, error) {
 	book := &model.Book{
@@ -25,7 +22,7 @@ func (r *BookRepository) CreateBook(ctx context.Context, b *model.Book) (*model.
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Take(&shelf, "id = ?", b.ShelfID).Error
 		if err != nil {
-			return fmt.Errorf("查询书架失败: %w", err)
+			return fmt.Errorf("查询书架失败: %w", normalizeError(err))
 		}
 
 		// 2. 获取锁后，再统计该书架的图书数量。
@@ -39,7 +36,7 @@ func (r *BookRepository) CreateBook(ctx context.Context, b *model.Book) (*model.
 
 		// 3. 满容量时，结束事务，不插入图书。
 		if count >= shelf.Size {
-			return ErrShelfFull
+			return model.ErrShelfFull
 		}
 
 		// 4. 使用同一个 tx 插入图书。
@@ -78,7 +75,7 @@ func (r *BookRepository) GetBook(ctx context.Context, shelfid int64, bookid int6
 	book := &model.Book{}
 	err = r.db.WithContext(ctx).Take(book, "ID=? AND shelf_id=?", bookid, shelfid).Error
 	if err != nil {
-		return nil, err
+		return nil, normalizeError(err)
 	}
 	return book, nil
 }
@@ -98,7 +95,7 @@ func (r *BookRepository) DeleteBook(ctx context.Context, shelfid int64, bookid i
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
-		return gorm.ErrRecordNotFound
+		return model.ErrNotFound
 	}
 	return nil
 }

@@ -1,13 +1,10 @@
 package service
 
 import (
-	"bs/internal/dao/mysql"
 	"bs/internal/model"
 	"context"
 	"errors"
 	"strings"
-
-	"gorm.io/gorm"
 )
 
 var (
@@ -42,10 +39,10 @@ func (svc *BookService) CreateBook(ctx context.Context, b *model.Book) (*model.B
 	}
 	book, err := svc.repo.CreateBook(ctx, b)
 
-	if errors.Is(err, mysql.ErrShelfFull) {
+	if errors.Is(err, model.ErrShelfFull) {
 		return nil, ErrShelfOversize
 	}
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+	if errors.Is(err, model.ErrNotFound) {
 		return nil, ErrNotargetShelf
 	}
 	if err != nil {
@@ -57,7 +54,7 @@ func (svc *BookService) CreateBook(ctx context.Context, b *model.Book) (*model.B
 func (svc *BookService) GetBook(ctx context.Context, shelfid int64, bookid int64) (*model.Book, error) {
 	book, err := svc.repo.GetBook(ctx, shelfid, bookid)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if errors.Is(err, model.ErrNotFound) {
 			return nil, ErrNotargetBook
 		}
 		return nil, ErrGetBookFailed
@@ -79,13 +76,13 @@ func (svc *BookService) ListBooks(ctx context.Context, shelfid int64) ([]*model.
 func (svc *BookService) DeleteBook(ctx context.Context, shelfid int64, bookid int64) error {
 	_, err := svc.repo.GetBook(ctx, shelfid, bookid)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if errors.Is(err, model.ErrNotFound) {
 			return ErrNotargetBook
 		}
 		return err
 	}
 	err = svc.repo.DeleteBook(ctx, shelfid, bookid)
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+	if errors.Is(err, model.ErrNotFound) {
 		return ErrNotargetBook
 	}
 	if err != nil {

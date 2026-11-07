@@ -1,6 +1,12 @@
 package mysql
 
-import "gorm.io/gorm"
+import (
+	"bs/internal/model"
+	"errors"
+	"fmt"
+
+	"gorm.io/gorm"
+)
 
 type ShelfRepository struct {
 	db *gorm.DB
@@ -20,4 +26,11 @@ func NewBookRepository(db *gorm.DB) *BookRepository {
 	return &BookRepository{
 		db: db,
 	}
+}
+
+func normalizeError(err error) error {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("%w: %w", model.ErrNotFound, err)
+	}
+	return err
 }

@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"strings"
-
-	"gorm.io/gorm"
 )
 
 var (
@@ -55,7 +53,7 @@ func (svc *ShelfService) ListShelves(ctx context.Context) ([]*model.Shelf, error
 func (svc *ShelfService) GetShelf(ctx context.Context, shelfid int64) (*model.Shelf, error) {
 	shelf, err := svc.repo.GetShelf(ctx, shelfid)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if errors.Is(err, model.ErrNotFound) {
 			return nil, ErrNotargetShelf
 		}
 		return nil, ErrGetShelfFailed
@@ -66,7 +64,7 @@ func (svc *ShelfService) GetShelf(ctx context.Context, shelfid int64) (*model.Sh
 func (svc *ShelfService) DeleteShelf(ctx context.Context, shelfid int64) error {
 	err := svc.repo.DeleteShelf(ctx, shelfid)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if errors.Is(err, model.ErrNotFound) {
 			return ErrNotargetShelf
 		}
 		return err

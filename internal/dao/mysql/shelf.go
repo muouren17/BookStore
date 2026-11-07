@@ -32,7 +32,7 @@ func (r *ShelfRepository) GetShelf(ctx context.Context, shelfid int64) (m *model
 	shelf := &model.Shelf{}
 	err = r.db.WithContext(ctx).Take(shelf, "ID=?", shelfid).Error
 	if err != nil {
-		return nil, err
+		return nil, normalizeError(err)
 	}
 	return shelf, nil
 }
@@ -51,7 +51,7 @@ func (r *ShelfRepository) DeleteShelf(ctx context.Context, shelfid int64) error 
 		shelf := &model.Shelf{}
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Take(shelf, "id=?", shelfid).Error
 		if err != nil {
-			return fmt.Errorf("查询书架失败: %w", err)
+			return fmt.Errorf("查询书架失败: %w", normalizeError(err))
 		}
 		err = tx.Where("shelf_id=?", shelfid).Delete(&model.Book{}).Error
 		if err != nil {
