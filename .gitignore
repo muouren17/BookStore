@@ -1,0 +1,9 @@
+.env
+.env.*
+!.env.example
+configs/config.yaml
+*.log
+/bin/
+/dist/
+/BookStore
+/bookstore
