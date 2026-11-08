@@ -80,9 +80,10 @@ func (r *BookRepository) GetBook(ctx context.Context, shelfid int64, bookid int6
 	return book, nil
 }
 
-func (r *BookRepository) ListBooks(ctx context.Context, shelfid int64) ([]*model.Book, error) {
+// 还需要一个书本id
+func (r *BookRepository) ListBooks(ctx context.Context, shelfid int64, cursor int64, pagesize int64) ([]*model.Book, error) {
 	var books []*model.Book
-	err := r.db.WithContext(ctx).Where("shelf_id=?", shelfid).Find(&books).Error
+	err := r.db.WithContext(ctx).Where("shelf_id=? AND ID>?", shelfid, cursor).Order("id asc").Limit(int(pagesize)).Find(&books).Error
 	if err != nil {
 		return nil, err
 	}

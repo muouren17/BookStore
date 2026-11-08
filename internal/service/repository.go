@@ -15,6 +15,6 @@ type ShelfRepository interface {
 type BookRepository interface {
 	CreateBook(ctx context.Context, b *model.Book) (*model.Book, error)
 	GetBook(ctx context.Context, shelfid int64, bookid int64) (*model.Book, error)
-	ListBooks(ctx context.Context, shelfid int64) ([]*model.Book, error)
+	ListBooks(ctx context.Context, shelfid int64, cursor int64, pagesize int64) ([]*model.Book, error)
 	DeleteBook(ctx context.Context, shelfid int64, bookid int64) error
 }

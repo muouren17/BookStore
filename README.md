@@ -16,6 +16,7 @@
 
 - 创建、查询、列出和删除书架。
 - 在指定书架中创建、查询、列出和删除图书。
+- 图书列表支持按 ID 升序的游标分页，通过分页令牌继续读取下一页。
 - 创建书架时校验主题，设置默认容量。
 - 添加图书时检查书架容量，在事务中锁定书架记录后统计数量、写入图书。
 - 删除书架时，在同一事务中删除该书架及其图书。
@@ -30,6 +31,7 @@
 - 书架容量的有效范围为 `1–5000`；未提供或超出范围时使用默认值 `500`。
 - 图书作者为空或仅含空白时使用 `anonymous`，标题为空或仅含空白时使用 `others`。
 - 图书属于指定书架，查询和删除图书时需要同时提供书架 ID 与图书 ID。
+- 图书列表不传分页令牌时从第一页开始，默认每页返回 `2` 本；书架列表仍一次返回全部书架。
 
 ## 代码组织
 
@@ -45,6 +47,7 @@
 │   ├── handler/               # 请求校验、消息转换与 gRPC 错误映射
 │   ├── service/               # 业务规则与 Repository 接口定义
 │   ├── dao/mysql/             # 基于 GORM 的 Repository 实现、事务与数据库初始化
+│   ├── pagination/            # 分页令牌编解码与参数校验
 │   └── model/                 # 数据模型与共享错误定义（ErrNotFound、ErrShelfFull）
 ├── pb/
 │   ├── bookstore.proto        # 服务与消息定义
@@ -149,7 +152,7 @@ gRPC 端口: 8090，HTTP Gateway 端口: 8091
 go test ./...
 ```
 
-当前自动化测试位于 `settings/setting_test.go`，覆盖端口范围、监听端口冲突、缺少 MySQL 配置，以及配置加载时拒绝缺少 MySQL 配置的情况。这些测试不需要连接数据库；HTTP/gRPC 接口、业务逻辑和退出流程尚未包含自动化测试。
+当前自动化测试位于 `settings/setting_test.go`，覆盖端口范围、监听端口冲突、缺少 MySQL 配置，以及配置加载时拒绝缺少 MySQL 配置的情况。这些测试不需要连接数据库；分页、HTTP/gRPC 接口、其他业务逻辑和退出流程尚未包含自动化测试。
 
 ## 接口概览
 
@@ -161,7 +164,7 @@ go test ./...
 | `CreateShelf` | `POST /v1/shelves` | 创建书架 |
 | `GetShelf` | `GET /v1/shelves/{id}` | 查询指定书架 |
 | `DeleteShelf` | `DELETE /v1/shelves/{id}` | 删除书架及其中的图书 |
-| `ListBooks` | `GET /v1/shelves/{id}/books` | 列出指定书架中的图书 |
+| `ListBooks` | `GET /v1/shelves/{id}/books` | 分页列出指定书架中的图书，可传 `page_token` 查询参数 |
 | `CreateBook` | `POST /v1/shelves/{id}/books` | 向指定书架添加图书 |
 | `GetBook` | `GET /v1/shelves/{shelfid}/books/{bookid}` | 查询指定图书 |
 | `DeleteBook` | `DELETE /v1/shelves/{shelfid}/books/{bookid}` | 删除指定图书 |
@@ -186,7 +189,7 @@ curl -X POST http://localhost:8091/v1/shelves/1/books \
   -H 'Content-Type: application/json' \
   -d '{"author":"示例作者","title":"Go 入门"}'
 
-# 列出该书架上的图书
+# 获取该书架图书列表的第一页，默认最多返回 2 本
 curl http://localhost:8091/v1/shelves/1/books
 
 # 查询图书，将最后的 1 替换为实际图书 ID
@@ -194,6 +197,30 @@ curl http://localhost:8091/v1/shelves/1/books/1
 ```
 
 HTTP 创建请求的 JSON 直接填写书架或图书字段，不需要再包一层 `shelf` 或 `book`；gRPC 请求仍使用 Proto 中定义的完整请求结构。Gateway 使用默认的 ProtoJSON 编解码方式，`int64` 类型的 ID、容量在响应 JSON 中表示为字符串。
+
+### 图书列表分页
+
+`ListBooks` 请求中的 `page_token` 为可选字符串。不传或仅传空白字符时读取第一页；后续请求需使用上一次响应中的令牌，并保持相同的书架 ID。
+
+- HTTP 响应中的令牌字段为 `nextPageToken`，gRPC 对应字段为 `next_page_token`。
+- 响应中该令牌为空或未出现时，表示已经没有下一页；此时应停止翻页，再次不传令牌会重新读取第一页。
+- 查询按图书 ID 升序进行，下一页读取 ID 大于上一页最后一本图书 ID 的记录。
+- 当前接口没有单独的 `page_size` 请求字段，首次请求固定使用每页 `2` 本；服务生成的后续令牌沿用该页大小。
+- 令牌使用 JSON 加标准 Base64 编码。校验要求游标 ID 非负、页大小在 `1–100` 之间、时间戳为正且距当前时间不超过 24 小时。每次生成下一页令牌时会更新时间戳；无效或过期令牌返回 gRPC `InvalidArgument`，经 HTTP Gateway 对应 HTTP `400`。
+
+HTTP 翻页示例（将书架 ID `1` 替换为实际值）：
+
+```bash
+# 先获取第一页，从响应中复制 nextPageToken
+curl http://localhost:8091/v1/shelves/1/books
+
+# 仅在响应包含非空 nextPageToken 时请求下一页
+NEXT_PAGE_TOKEN='替换为上一页响应中的 nextPageToken'
+curl --get http://localhost:8091/v1/shelves/1/books \
+  --data-urlencode "page_token=$NEXT_PAGE_TOKEN"
+```
+
+标准 Base64 令牌可能包含 `+`、`/`、`=`，使用 `--data-urlencode` 可以避免直接拼接查询字符串导致令牌被错误解析。
 
 ### gRPC 调用示例
 
@@ -219,6 +246,22 @@ grpcurl -plaintext \
   -proto pb/bookstore.proto \
   -d '{}' \
   localhost:8090 pb.Bookstore/ListShelves
+
+# 获取书架 1 的图书列表第一页
+grpcurl -plaintext \
+  -import-path . \
+  -import-path /path/to/googleapis \
+  -proto pb/bookstore.proto \
+  -d '{"id":"1"}' \
+  localhost:8090 pb.Bookstore/ListBooks
+
+# 有下一页时，将 page_token 替换为上一次响应中的 nextPageToken
+grpcurl -plaintext \
+  -import-path . \
+  -import-path /path/to/googleapis \
+  -proto pb/bookstore.proto \
+  -d '{"id":"1","page_token":"替换为上一次响应中的 nextPageToken"}' \
+  localhost:8090 pb.Bookstore/ListBooks
 ```
 
 ## 实践重点与当前范围
@@ -231,5 +274,6 @@ grpcurl -plaintext \
 - 使用事务和行锁处理容量校验及关联删除。
 - 用 Proto 同时维护 gRPC 接口定义与 HTTP 路由映射。
 - 校验启动配置，并通过退出信号协调 HTTP 与 gRPC 服务的关闭。
+- 使用 ID 游标和分页令牌读取图书列表。
 
-当前已有配置相关的自动化测试，尚未实现用户认证、TLS、分页或图书更新，也尚未覆盖业务逻辑、接口和退出流程的自动化测试。后续可围绕这些部分继续练习和完善。
+当前已有配置相关的自动化测试，图书列表已支持游标分页；尚未实现用户认证、TLS、书架列表分页或图书更新，也尚未覆盖分页、其他业务逻辑、接口和退出流程的自动化测试。后续可围绕这些部分继续练习和完善。

@@ -29,20 +29,24 @@ func (bs *BookstoreServer) ListBooks(ctx context.Context, s *pb.ListBooksRequest
 	if s == nil || s.Id <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "invalid shelf id")
 	}
-	books, err := bs.bookService.ListBooks(ctx, s.Id)
+
+	books, nextpage_token, err := bs.bookService.ListBooks(ctx, s.Id, s.PageToken)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrGetBookFailed):
 			return &pb.ListBooksResponse{Books: nil}, status.Error(codes.Internal, err.Error())
 		case errors.Is(err, service.ErrNoBook):
 			return &pb.ListBooksResponse{Books: nil}, nil
+		case errors.Is(err, service.ErrInvalidParam):
+			return &pb.ListBooksResponse{Books: nil}, status.Error(codes.InvalidArgument, "无效的分页参数")
 		default:
 			return &pb.ListBooksResponse{Books: nil}, status.Error(codes.Internal, "service.ListBooks failed")
 		}
 	}
 	pbbooks := booksToProto(books)
 	return &pb.ListBooksResponse{
-		Books: pbbooks,
+		Books:         pbbooks,
+		NextPageToken: nextpage_token,
 	}, nil
 }
 

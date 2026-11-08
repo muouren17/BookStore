@@ -96,9 +96,11 @@ message DeleteShelfRequest {
 
 message ListBooksRequest {
     int64 id = 1;
+    string page_token=2;
 }
 message ListBooksResponse {
     repeated Book books=1;
+    string next_page_token=2;
 }
 
 message CreateBookRequest {

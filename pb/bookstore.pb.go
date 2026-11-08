@@ -7,13 +7,14 @@
 package pb
 
 import (
+	reflect "reflect"
+	sync "sync"
+	unsafe "unsafe"
+
 	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
-	reflect "reflect"
-	sync "sync"
-	unsafe "unsafe"
 )
 
 const (
@@ -410,6 +411,7 @@ func (x *DeleteShelfRequest) GetId() int64 {
 type ListBooksRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	PageToken     string                 `protobuf:"bytes,2,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -451,9 +453,17 @@ func (x *ListBooksRequest) GetId() int64 {
 	return 0
 }
 
+func (x *ListBooksRequest) GetPageToken() string {
+	if x != nil {
+		return x.PageToken
+	}
+	return ""
+}
+
 type ListBooksResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Books         []*Book                `protobuf:"bytes,1,rep,name=books,proto3" json:"books,omitempty"`
+	NextPageToken string                 `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -493,6 +503,13 @@ func (x *ListBooksResponse) GetBooks() []*Book {
 		return x.Books
 	}
 	return nil
+}
+
+func (x *ListBooksResponse) GetNextPageToken() string {
+	if x != nil {
+		return x.NextPageToken
+	}
+	return ""
 }
 
 type CreateBookRequest struct {
@@ -763,11 +780,14 @@ const file_bookstore_proto_rawDesc = "" +
 	"\x10GetShelfResponse\x12\x1f\n" +
 	"\x05shelf\x18\x01 \x01(\v2\t.pb.ShelfR\x05shelf\"$\n" +
 	"\x12DeleteShelfRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x03R\x02id\"\"\n" +
+	"\x02id\x18\x01 \x01(\x03R\x02id\"A\n" +
 	"\x10ListBooksRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x03R\x02id\"3\n" +
+	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x1d\n" +
+	"\n" +
+	"page_token\x18\x02 \x01(\tR\tpageToken\"[\n" +
 	"\x11ListBooksResponse\x12\x1e\n" +
-	"\x05books\x18\x01 \x03(\v2\b.pb.BookR\x05books\"A\n" +
+	"\x05books\x18\x01 \x03(\v2\b.pb.BookR\x05books\x12&\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"A\n" +
 	"\x11CreateBookRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x1c\n" +
 	"\x04book\x18\x02 \x01(\v2\b.pb.BookR\x04book\"2\n" +
