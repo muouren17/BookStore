@@ -2,6 +2,7 @@ package main
 
 import (
 	"bs/internal/dao/mysql"
+	"bs/internal/discovery"
 	"bs/internal/handler"
 	"bs/internal/service"
 	"bs/pb"
@@ -95,9 +96,11 @@ func run() error {
 	err = pb.RegisterBookstoreHandlerFromEndpoint(
 		ctx,
 		gatewayMux,
-		fmt.Sprintf("127.0.0.1:%d", settings.Conf.Port),
+		"static:///bookstore",
+		// fmt.Sprintf("127.0.0.1:%d", settings.Conf.Port),
 		[]grpc.DialOption{
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithResolvers(&discovery.Builder{}),
 		},
 	)
 	if err != nil {
@@ -132,11 +135,11 @@ func run() error {
 		serveErr <- httpServer.ListenAndServe()
 	}()
 
-	log.Printf(
-		"gRPC 端口: %d，HTTP Gateway 端口: %d",
-		settings.Conf.Port,
-		settings.Conf.HTTPPort,
-	)
+	// log.Printf(
+	// 	"gRPC 端口: %d，HTTP Gateway 端口: %d",
+	// 	settings.Conf.Port,
+	// 	settings.Conf.HTTPPort,
+	// )
 
 	var runErr error
 	select {
