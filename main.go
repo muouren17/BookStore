@@ -10,10 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -58,24 +59,34 @@ func run() error {
 
 	bookstoreServer := handler.NewBookstoreServer(shelfSvc, bookSvc)
 
-	listener, err := net.Listen(
-		"tcp",
-		fmt.Sprintf(":%d", settings.Conf.Port),
-	)
-	if err != nil {
-		return fmt.Errorf("net.Listen failed , err:%v\n", err)
-	}
-	defer listener.Close()
+	//统一端口
 
 	grpcServer := grpc.NewServer()
 	pb.RegisterBookstoreServer(grpcServer, bookstoreServer)
 	defer grpcServer.Stop()
 
-	serveErr := make(chan error, 2)
+	serveErr := make(chan error, 1)
 
-	go func() {
-		serveErr <- grpcServer.Serve(listener)
-	}()
+	//
+
+	// listener, err := net.Listen(
+	// 	"tcp",
+	// 	fmt.Sprintf(":%d", settings.Conf.Port),
+	// )
+	// if err != nil {
+	// 	return fmt.Errorf("net.Listen failed , err:%v\n", err)
+	// }
+	// defer listener.Close()
+
+	// grpcServer := grpc.NewServer()
+	// pb.RegisterBookstoreServer(grpcServer, bookstoreServer)
+	// defer grpcServer.Stop()
+
+	// serveErr := make(chan error, 2)
+
+	// go func() {
+	// 	serveErr <- grpcServer.Serve(listener)
+	// }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -92,11 +103,30 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("注册 Gateway 失败: %w", err)
 	}
+
+	//统一端口
+
+	drain := &gatewayDrain{}
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+
 	httpServer := &http.Server{
-		Addr:    fmt.Sprintf(":%d", settings.Conf.HTTPPort),
-		Handler: gatewayMux,
+		Addr:      fmt.Sprintf(":%d", settings.Conf.Port),
+		Protocols: protocols,
+		// Handler: grpcGatewayHandler(grpcServer, gatewayMux),
+		Handler: grpcGatewayHandler(grpcServer, gatewayMux, drain),
 	}
 	defer httpServer.Close()
+
+	log.Printf("gRPC 和 HTTP API 共用端口: %d", settings.Conf.Port)
+	//
+
+	// httpServer := &http.Server{
+	// 	Addr:    fmt.Sprintf(":%d", settings.Conf.HTTPPort),
+	// 	Handler: gatewayMux,
+	// }
+	// defer httpServer.Close()
 
 	go func() {
 		serveErr <- httpServer.ListenAndServe()
@@ -116,10 +146,13 @@ func run() error {
 	}
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer shutdownCancel()
-	shutdownErr := shutdownServers(shutdownCtx, httpServer, grpcServer)
+	// shutdownErr := shutdownServers(shutdownCtx, httpServer, grpcServer)
+	shutdownErr := shutdownServers(shutdownCtx, httpServer, grpcServer, drain)
 	return errors.Join(runErr, shutdownErr)
 }
 
+// 原有退出逻辑，保留供对照。
+/*
 func shutdownServers(ctx context.Context, httpServer *http.Server, grpcServer *grpc.Server) error {
 	httpErr := httpServer.Shutdown(ctx)
 	if httpErr != nil {
@@ -137,4 +170,99 @@ func shutdownServers(ctx context.Context, httpServer *http.Server, grpcServer *g
 		grpcServer.Stop()
 		return errors.Join(httpErr, ctx.Err())
 	}
+}
+*/
+
+// 原有请求分流逻辑，保留供对照。
+/*
+func grpcGatewayHandler(
+	grpcServer *grpc.Server,
+	gatewayMux http.Handler,
+) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor == 2 &&
+			strings.HasPrefix(
+				r.Header.Get("Content-Type"),
+				"application/grpc",
+			) {
+			grpcServer.ServeHTTP(w, r)
+			return
+		}
+
+		gatewayMux.ServeHTTP(w, r)
+	})
+}
+*/
+
+func shutdownServers(
+	ctx context.Context,
+	httpServer *http.Server,
+	grpcServer *grpc.Server,
+	drain *gatewayDrain,
+) error {
+	defer grpcServer.Stop()
+
+	// Gateway 还需要回连共用端口，先等待已有 REST 请求完成。
+	select {
+	case <-drain.startDrain():
+	case <-ctx.Done():
+		return errors.Join(ctx.Err(), httpServer.Close())
+	}
+
+	// 此时再关闭监听端口，等待剩余的 HTTP/2 gRPC 请求完成。
+	if err := httpServer.Shutdown(ctx); err != nil {
+		return errors.Join(err, httpServer.Close())
+	}
+	return nil
+}
+
+func grpcGatewayHandler(
+	grpcServer *grpc.Server,
+	gatewayMux http.Handler,
+	drain *gatewayDrain,
+) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor == 2 &&
+			strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
+			// 退出期间继续允许 Gateway 发起内部 gRPC 调用。
+			grpcServer.ServeHTTP(w, r)
+			return
+		}
+
+		if !drain.begin() {
+			http.Error(w, "服务正在关闭，请稍后重试", http.StatusServiceUnavailable)
+			return
+		}
+		defer drain.active.Done()
+		gatewayMux.ServeHTTP(w, r)
+	})
+}
+
+type gatewayDrain struct {
+	mu      sync.Mutex
+	closing bool
+	active  sync.WaitGroup
+}
+
+func (d *gatewayDrain) begin() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closing {
+		return false
+	}
+	d.active.Add(1)
+	return true
+}
+
+func (d *gatewayDrain) startDrain() <-chan struct{} {
+	d.mu.Lock()
+	d.closing = true
+	d.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		d.active.Wait()
+		close(done)
+	}()
+	return done
 }

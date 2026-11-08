@@ -21,9 +21,10 @@
 - 添加图书时检查书架容量，在事务中锁定书架记录后统计数量、写入图书。
 - 删除书架时，在同一事务中删除该书架及其图书。
 - 将部分业务错误转换为 `InvalidArgument`、`NotFound`、`Internal` 等 gRPC 状态码。
-- 同时启动 gRPC 服务与 HTTP Gateway，使用不同的监听端口。
-- 启动时校验 MySQL 配置是否存在、各端口是否有效，以及 gRPC 与 HTTP 端口是否冲突。
+- gRPC 与 HTTP Gateway 共用同一个监听端口，按 HTTP 协议版本和 Content-Type 分流请求。
+- 启动时校验 MySQL 配置是否存在、各端口配置是否有效，并保留旧版 `http_port` 的校验。
 - 收到 Ctrl+C 或 `SIGTERM` 时关闭服务，共用 10 秒的退出期限；超时后强制停止未结束的服务。
+- 退出期间拒绝新的 HTTP API 请求并返回 `503`，等待已接收的 Gateway 请求完成，期间继续允许其内部 gRPC 回连。
 
 部分业务规则：
 
@@ -37,7 +38,8 @@
 
 ```text
 .
-├── main.go                    # 初始化依赖、启动 gRPC 与 HTTP Gateway、处理退出信号
+├── main.go                    # 初始化依赖、共用端口分流、等待在途请求并关闭服务
+├── main_test.go               # 共用端口下 Gateway 与 gRPC 请求的退出流程测试
 ├── configs/
 │   └── config.yaml            # 本地配置，已被 .gitignore 忽略，克隆后需自行创建
 ├── settings/
@@ -125,7 +127,9 @@ mysql:
 
 将示例中的连接信息替换为自己的配置。`configs/config.yaml` 已被 Git 忽略，避免把本地数据库凭据提交到仓库。
 
-`port` 是 gRPC 端口，`http_port` 是 HTTP Gateway 端口，两项都必须填写且不能相同。启动校验要求这些端口及 `mysql.port` 均在 `1–65535` 范围内，并且必须提供 `mysql` 配置段；程序没有为这两个监听端口设置默认值。旧配置需要补上 `http_port`。
+`port` 是 gRPC 与 HTTP API 共用的监听端口。示例中两种客户端均访问 `8090`，`http_port: 8091` 不会创建额外的监听端口。
+
+当前配置结构和校验仍保留旧版 `http_port` 字段，因此两项都必须填写且不能相同，`port`、`http_port` 和 `mysql.port` 均需在 `1–65535` 范围内，并且必须提供 `mysql` 配置段。程序没有设置默认监听端口；请保留示例中的 `http_port`，以通过现有校验。
 
 程序优先查找 `./configs/config.yaml`，也支持在当前目录查找 `config.yaml`。当前 `.gitignore` 只排除了前者，建议将本地配置放在 `configs/` 下。配置文件变化时会重新读取配置对象，但该回调不会再次执行启动校验，数据库连接池和监听端口也不会随之重建，修改这些配置后需重启服务。
 
@@ -136,15 +140,17 @@ go mod download
 go run .
 ```
 
-使用上述示例配置时，gRPC 监听 `8090` 端口，HTTP Gateway 监听 `8091` 端口，程序会输出：
+使用上述示例配置时，gRPC 与 HTTP API 均监听 `8090` 端口，程序会输出：
 
 ```text
-gRPC 端口: 8090，HTTP Gateway 端口: 8091
+gRPC 和 HTTP API 共用端口: 8090
 ```
+
+当前还会打印旧版双端口日志 `gRPC 端口: 8090，HTTP Gateway 端口: 8091`，其中 `8091` 仅是保留配置的值，实际没有监听该端口。调用接口时以共用端口 `8090` 为准。
 
 已生成的 Go 通信代码包含在仓库中，直接运行项目无需重新生成 Proto 代码。
 
-按 Ctrl+C 或发送 `SIGTERM` 可触发服务关闭：先等待 HTTP 请求结束，再等待 gRPC 请求结束，两个阶段共用 10 秒期限，最后关闭数据库连接池。
+按 Ctrl+C 或发送 `SIGTERM` 可触发服务关闭：先拒绝新的 HTTP API 请求并返回 `503`，等待已接收的 Gateway 请求完成，期间保持共用端口开放以允许 Gateway 内部 gRPC 回连；随后关闭监听并等待剩余请求结束，最后停止 gRPC 服务、关闭数据库连接池。各阶段共用 10 秒期限，超时后强制关闭连接。
 
 ### 5. 运行测试
 
@@ -152,7 +158,12 @@ gRPC 端口: 8090，HTTP Gateway 端口: 8091
 go test ./...
 ```
 
-当前自动化测试位于 `settings/setting_test.go`，覆盖端口范围、监听端口冲突、缺少 MySQL 配置，以及配置加载时拒绝缺少 MySQL 配置的情况。这些测试不需要连接数据库；分页、HTTP/gRPC 接口、其他业务逻辑和退出流程尚未包含自动化测试。
+当前自动化测试包括：
+
+- `settings/setting_test.go`：端口范围、旧版双端口配置冲突、缺少 MySQL 配置，以及配置加载时拒绝缺少 MySQL 配置的情况。
+- `main_test.go`：退出时拒绝新的 HTTP API 请求、允许已接收的 Gateway 请求继续回连、等待在途的直接 gRPC/Gateway 调用完成，以及期限到达后关闭阻塞请求。
+
+退出测试通过内存连接运行共用端口的 HTTP/gRPC 服务，无需真实数据库或外部网络。分页及数据库业务逻辑尚未包含自动化测试。
 
 ## 接口概览
 
@@ -169,31 +180,31 @@ go test ./...
 | `GetBook` | `GET /v1/shelves/{shelfid}/books/{bookid}` | 查询指定图书 |
 | `DeleteBook` | `DELETE /v1/shelves/{shelfid}/books/{bookid}` | 删除指定图书 |
 
-当前 gRPC 与 HTTP 服务均使用明文传输，Gateway 通过 `127.0.0.1:<port>` 连接 gRPC 服务。
+当前 gRPC 与 HTTP API 共用 `port`，使用明文传输，同时支持 HTTP/1.1 与未加密的 HTTP/2。HTTP/2 且 Content-Type 以 `application/grpc` 开头的请求交给 gRPC 服务，其余请求交给 HTTP Gateway。Gateway 通过 `127.0.0.1:<port>` 回连同一端口上的 gRPC 服务。
 
 ### HTTP 调用示例
 
-以下命令使用示例 HTTP 端口 `8091`：
+以下命令使用示例共用端口 `8090`：
 
 ```bash
 # 创建书架
-curl -X POST http://localhost:8091/v1/shelves \
+curl -X POST http://localhost:8090/v1/shelves \
   -H 'Content-Type: application/json' \
   -d '{"theme":"Go 学习","size":"100"}'
 
 # 列出所有书架
-curl http://localhost:8091/v1/shelves
+curl http://localhost:8090/v1/shelves
 
 # 在书架中添加图书，将路径中的 1 替换为实际书架 ID
-curl -X POST http://localhost:8091/v1/shelves/1/books \
+curl -X POST http://localhost:8090/v1/shelves/1/books \
   -H 'Content-Type: application/json' \
   -d '{"author":"示例作者","title":"Go 入门"}'
 
 # 获取该书架图书列表的第一页，默认最多返回 2 本
-curl http://localhost:8091/v1/shelves/1/books
+curl http://localhost:8090/v1/shelves/1/books
 
 # 查询图书，将最后的 1 替换为实际图书 ID
-curl http://localhost:8091/v1/shelves/1/books/1
+curl http://localhost:8090/v1/shelves/1/books/1
 ```
 
 HTTP 创建请求的 JSON 直接填写书架或图书字段，不需要再包一层 `shelf` 或 `book`；gRPC 请求仍使用 Proto 中定义的完整请求结构。Gateway 使用默认的 ProtoJSON 编解码方式，`int64` 类型的 ID、容量在响应 JSON 中表示为字符串。
@@ -212,11 +223,11 @@ HTTP 翻页示例（将书架 ID `1` 替换为实际值）：
 
 ```bash
 # 先获取第一页，从响应中复制 nextPageToken
-curl http://localhost:8091/v1/shelves/1/books
+curl http://localhost:8090/v1/shelves/1/books
 
 # 仅在响应包含非空 nextPageToken 时请求下一页
 NEXT_PAGE_TOKEN='替换为上一页响应中的 nextPageToken'
-curl --get http://localhost:8091/v1/shelves/1/books \
+curl --get http://localhost:8090/v1/shelves/1/books \
   --data-urlencode "page_token=$NEXT_PAGE_TOKEN"
 ```
 
@@ -274,6 +285,7 @@ grpcurl -plaintext \
 - 使用事务和行锁处理容量校验及关联删除。
 - 用 Proto 同时维护 gRPC 接口定义与 HTTP 路由映射。
 - 校验启动配置，并通过退出信号协调 HTTP 与 gRPC 服务的关闭。
+- 在同一端口分流 HTTP API 与 gRPC 请求，并在退出时先等待 Gateway 请求完成再关闭监听。
 - 使用 ID 游标和分页令牌读取图书列表。
 
-当前已有配置相关的自动化测试，图书列表已支持游标分页；尚未实现用户认证、TLS、书架列表分页或图书更新，也尚未覆盖分页、其他业务逻辑、接口和退出流程的自动化测试。后续可围绕这些部分继续练习和完善。
+当前已有配置与共用端口退出流程的自动化测试，图书列表已支持游标分页；尚未实现用户认证、TLS、书架列表分页或图书更新，也尚未覆盖分页及数据库业务逻辑的自动化测试。后续可围绕这些部分继续练习和完善。
